@@ -103,9 +103,8 @@ class _AllBookingPageState extends ConsumerState<AllBookingScreen>{
    bool sameWeekRange(DateTime? target, DateTime weekStart) {
     // Get the start of the week for both dates
     if (target == null) return false; // Handle null target date
-    final weekEnd = weekStart.add(const Duration(days: 5));
-    return target.isAfter(weekStart.subtract(const Duration(days: 1))) &&
-        target.isBefore(weekEnd.add(const Duration(days: 1)));
+    final weekEnd = weekStart.add(const Duration(days: 6));
+    return !target.isBefore(weekStart) && !target.isAfter(weekEnd);
    }
 
 
@@ -185,7 +184,7 @@ class _AllBookingPageState extends ConsumerState<AllBookingScreen>{
     final allTransaction = ref.watch(allTransactionFilteredProvider);
     final acceptedTransaction = ref.watch(accepted_transaction.acceptedTransactionProvider);
  
-print("Tab index: $_expandedTabIndex, isDelayed: $isDelayed, date: $date");
+    print("Tab index: $_expandedTabIndex, isDelayed: $isDelayed, date: $date");
     return Expanded(
       child: RefreshIndicator(
         onRefresh: _refreshTransaction,
@@ -252,18 +251,25 @@ print("Tab index: $_expandedTabIndex, isDelayed: $isDelayed, date: $date");
               if (!isOngoing || !notCancelled) return false;
 
               // Safely parse the string to DateTime
-              try{
-                final dateToCheck = tx.dispatchType == "ot"
-                ? DateTime.parse(tx.pickupDate)
-                : DateTime.parse(tx.deliveryDate); // Handle null dates
+              try {
+                final rawDate = tx.dispatchType == "ot" ? tx.pickupDate : tx.deliveryDate;
+                if(rawDate == null || rawDate.isEmpty) return false;
+                final isoDate = rawDate.replaceFirst(' ', 'T');
+                DateTime selectedDate = DateTime.parse(isoDate).add(const Duration(hours: 8));
 
-                if(isDelayed) {
-                  return dateToCheck.isBefore(weekStartDates.first);
-                }else{
-                  return sameWeekRange(dateToCheck, date!);
+                selectedDate = DateTime(selectedDate.year, selectedDate.month,selectedDate.day);
+
+                final firstWeekStart = DateTime(weekStartDates.first.year,weekStartDates.first.month,weekStartDates.first.day);
+
+                // ✅ If delayed, check if any date is before week start
+                if (isDelayed) {
+                  return selectedDate.isBefore(firstWeekStart);
+                } else {
+                  // Check if any date falls in the same week
+                  return sameWeekRange(selectedDate, DateTime(date!.year,date.month, date.day));
                 }
-              }catch(_) {
-                return false; // If parsing fails, exclude this transaction
+              } catch (_) {
+                return false;
               }
             }).toList();
 
@@ -330,7 +336,7 @@ print("Tab index: $_expandedTabIndex, isDelayed: $isDelayed, date: $date");
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text (
-                                      item.name,
+                                      item.name!,
                                       style: AppTextStyles.body.copyWith(
                                         fontSize: 14,
                                         fontWeight: FontWeight.bold,

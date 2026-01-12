@@ -18,14 +18,11 @@ use Carbon\Carbon;
 
 
 class TransactionController extends Controller
-
-{   
+{
     protected $url = "https://rjramos147-yxe-driver-app-beta.odoo.com";
-    protected $db = 'rjramos147-yxe-driver-app-beta-yxe-driverapp-beta-24483108';
-    // protected $odoo_url = "http://192.168.76.45:8080/odoo/jsonrpc";
+    protected $db = 'rjramos147-yxe-driver-app-beta1-yxe-driverapp-beta-26086341';
+    // protected $odoo_url = "http://192.168.76.205:8080/odoo/jsonrpc";
     protected $odoo_url = "https://rjramos147-yxe-driver-app-beta.odoo.com/jsonrpc";
-
-    
 
    
    
@@ -219,7 +216,7 @@ class TransactionController extends Controller
                     "dispatch.manager", 
                     "search_read",
                     [[["id", "=", $transactionId]]],  // Search by Request Number
-                    ["fields" => ["dispatch_type","de_request_no", "pl_request_no", "dl_request_no", "pe_request_no","service_type", "booking_reference_no" ]]
+                    ["fields" => ["dispatch_type","de_request_no", "pl_request_no", "dl_request_no", "pe_request_no","service_type", "transport_mode","booking_reference_no" ]]
                 ]
             ],
             "id" => 1
@@ -345,6 +342,7 @@ class TransactionController extends Controller
     private function buildUpdateField2($type, $requestNumber, $images, $signature, $enteredName, $actualTime, $containerNumber, $newStatus, $serviceType)
     {
         $updateField = [];
+        $updateBookingStatus = [];
         if ($type['dispatch_type'] == "ot" && $type['de_request_no'] == $requestNumber) {
             Log::info("Updating DE proof and signature for request number: {$requestNumber}");
             $pod = isset($images['POD']['content']) && $images['POD']['content'] !== null 
@@ -359,6 +357,8 @@ class TransactionController extends Controller
                 "de_completion_time" => $actualTime,
                 // "de_request_status" => $newStatus,
             ];
+
+            
         }  
         if ($type['dispatch_type'] == "ot" && $type['pl_request_no'] == $requestNumber) {
             Log::info("Updating DL proof and signature for request number: {$requestNumber}");
@@ -375,6 +375,10 @@ class TransactionController extends Controller
                 "pl_completion_time" => $actualTime,
                 // "pl_request_status" => $newStatus,
                 "container_number" => $containerNumber,
+                
+            ];
+
+            $updateBookingStatus = [
                 "booking_status" => 3
             ];
         }
@@ -396,6 +400,10 @@ class TransactionController extends Controller
                 "container_number" => $containerNumber,
                 
             ];
+            $updateBookingStatus = [
+                "booking_status" => 1
+            ];
+
         }   
         if($type['dispatch_type'] === "dt" && $type['dl_request_no'] === $requestNumber) {
             $transfer_of_liability = isset($images['Transfer of Liability Form']['content']) && $images['Transfer of Liability Form']['content'] !== null 
@@ -448,7 +456,6 @@ class TransactionController extends Controller
                 "dl_completion_time" => $actualTime,
                 // "dl_request_status" => $newStatus,
                 "container_number" => $containerNumber,
-                "booking_status" => 1,
                 "dl_hwb_signed" => $hwb_signed,
                 "dl_hwb_signed_filename" => $hwb_signed_filename,
                 "dl_delivery_receipt" => $delivery_receipt,
@@ -461,6 +468,9 @@ class TransactionController extends Controller
                 "dl_stock_delivery_receipt_filename" => $stock_delivery_receipt_filename,
                 "dl_sales_invoice" => $sales_invoice,
                 "dl_sales_invoice_filename" => $sales_invoice_filename
+            ];
+            $updateBookingStatus = [
+                "booking_status" => 1
             ];
         }  
         if ($type['dispatch_type'] === "dt" && $type['pe_request_no'] === $requestNumber) {
@@ -480,7 +490,10 @@ class TransactionController extends Controller
                 "container_number" => $containerNumber
             ];
         }
-        return $updateField;
+        return [
+            'updateField' => $updateField,
+            'updateBookingStatus' => $updateBookingStatus,
+        ];
     }
 
 
@@ -603,8 +616,10 @@ class TransactionController extends Controller
                     ["fields" => ["id","dispatch_type","actual_datetime","scheduled_datetime","fcl_code","is_backload"]]
                 ]
             ],
-            "id" => 5
+            "id" => rand(1000,9999)
         ];
+
+         Log::debug("🔍 Milestone History Search Payload", $milestoneCodeSearch);
     
         $response = file_get_contents($odooUrl, false, stream_context_create([
             "http" => [
@@ -617,12 +632,11 @@ class TransactionController extends Controller
         $fcl_code_response = json_decode($response, true);
 
         if (!isset($fcl_code_response['result']) || empty($fcl_code_response['result'])) {
-            Log::error("❌ No data on this ID", ["response" => $fcl_code_response]);
+            Log::error("❌ No data on this ID (milestone level)", ["response" => $fcl_code_response]);
             return response()->json(['success' => false, 'message' => 'Data not found'], 404);
         }
 
         return $fcl_code_response['result'];
-
     }
 
     private function updateMilestoneAndSendEmail(array $milestoneResultList, string $milestoneCodeToUpdate, string $actualTime, string $db, int $uid, string $odooPassword, string $odooUrl)
@@ -697,6 +711,12 @@ class TransactionController extends Controller
             'GYDT' => 'dispatch_manager.a2_email_notification_shipper_template',
             'ELOT' => 'dispatch_manager.a5_email_notification_laden_template',
             'EEDT' => 'dispatch_manager.a5_email_notification_laden_template',
+            'LTEOT' => 'dispatch_manager.d1_email_notif_item_template',
+            'LCLOT' => 'dispatch_manager.d2_item_sorting_hub_template',
+            'LGYDT' => 'dispatch_manager.f2_consignee_driver_deliver_template',
+            'LCLDT' => 'dispatch_manager.f3_shipper_consignee_complete_template',
+            'TTEOT' => 'dispatch_manager.g2_truck_driver_cargo_shipper_template',
+            'TCLOT' => 'dispatch_manager.g3_email_arrived_consignee_template',
         ];
 
         $template_xml_id = $fcl_code_email[$fcl_code] ?? null;
@@ -798,6 +818,10 @@ class TransactionController extends Controller
     
     private function resolveMilestoneCode($type, $requestNumber, $serviceType)
     {
+        $transportMode = is_array($type['transport_mode']) ? $type['transport_mode'][0] : $type['transport_mode'];
+        if ($type['dispatch_type'] == "ot" && $type['pl_request_no'] == $requestNumber && $transportMode == 1) {
+            return "TTEOT";
+        }
         if ($type['dispatch_type'] == "ot" && $type['de_request_no'] == $requestNumber && $serviceType == 1) {
             return "TYOT";
         }
@@ -816,15 +840,21 @@ class TransactionController extends Controller
         if ($type['dispatch_type'] == "dt" && $type['dl_request_no'] == $requestNumber && $serviceType == 2) {
             return "LGYDT";
         }
+        
         return null;
     }
 
     private function resolveMilestoneCode2($type, $requestNumber, $serviceType)
     {
+        $transportMode = is_array($type['transport_mode']) ? $type['transport_mode'][0] : $type['transport_mode'];
+        if ($type['dispatch_type'] == "ot" && $type['pl_request_no'] == $requestNumber && $transportMode == 1) {
+             Log::info("🚚 Entered TCLOT branch for land transport");
+            return "TCLOT";
+        }
         if ($type['dispatch_type'] == "ot" && $type['de_request_no'] == $requestNumber && $serviceType == 1) {
             return "TEOT";
         }
-        if ($type['dispatch_type'] == "ot" && $type['pl_request_no'] == $requestNumber && $serviceType == 1) {
+        if ($type['dispatch_type'] == "ot" && $type['pl_request_no'] == $requestNumber && $serviceType == 1 ) {
             return "CLOT";
         }
         if ($type['dispatch_type'] == "dt" && $type['dl_request_no'] == $requestNumber && $serviceType == 1) {
@@ -839,6 +869,7 @@ class TransactionController extends Controller
         if ($type['dispatch_type'] == "dt" && $type['dl_request_no'] == $requestNumber && $serviceType == 2) {
             return "LCLDT";
         }
+       
         return null;
     }
 
@@ -856,7 +887,7 @@ class TransactionController extends Controller
         return null;
     }
 
-    
+   
     private function consolidationMaster($transactionId,$actualTime,$db,$uid,$odooPassword,$odooUrl,$bookingRef)
     {
         $notebookRes = jsonRpcRequest($odooUrl, [
@@ -867,7 +898,11 @@ class TransactionController extends Controller
                 'method' => 'execute_kw',
                 'args' => [$db, $uid, $odooPassword, 'consol.type.notebook', 'search_read',
                     [[['consol_destination', '=', $transactionId]]],
-                    ['fields' => ['id', 'consolidation_id', 'consol_origin','consol_destination','type_consol']]
+                    [
+                        'fields' => ['id', 'consolidation_id', 'consol_origin','consol_destination','type_consol'],
+                        'order' => 'id desc',  // <--- get latest row first
+                        'limit' => 1           // <--- only fetch the latest row
+                    ]
                 ]
             ],
             'id' => rand(1000, 9999)
@@ -910,7 +945,7 @@ class TransactionController extends Controller
             $master = $masterRes['result'][0] ?? null;
             $status = strtolower($master['status'] ?? '');
 
-            if ($status === 'draft') {
+            if (in_array($status, ['draft', 'cancelled']) && $consolType !== 1) {
                 Log::info('⏩ Skipping backload — status not consolidated', [
                     'consolMasterId' => $consolMasterId,
                     'status' => $status
@@ -1055,7 +1090,8 @@ class TransactionController extends Controller
                                     'actual_datetime' => $actualTime,
                                     'button_readonly' => true,
                                     'button_confirm_semd' => false,
-                                    'clicked_by' => (int) $uid
+                                    'clicked_by' => (int) $uid,
+                                    'milestone_status' => 'Backload'
                                 ]]
                                 ]
                             ],
@@ -1071,7 +1107,7 @@ class TransactionController extends Controller
         return $resultSummary;
     }
 
-   
+  
     private function divertedConsol($transactionId, $actualTime, $db, $uid, $odooPassword, $odooUrl, $bookingRef)
     {
         $notebookRes = jsonRpcRequest($odooUrl, [
@@ -1084,7 +1120,11 @@ class TransactionController extends Controller
                     $db, $uid, $odooPassword,
                     'consol.type.notebook', 'search_read',
                     [[['consol_destination', '=', $transactionId]]],
-                    ['fields' => ['id', 'consolidation_id', 'consol_origin', 'consol_destination', 'type_consol']]
+                    [
+                        'fields' => ['id', 'consolidation_id', 'consol_origin','consol_destination','type_consol'],
+                        'order' => 'id desc',  // <--- get latest row first
+                        'limit' => 1           // <--- only fetch the latest row
+                    ]
                 ]
             ],
             'id' => rand(1000, 9999)
@@ -1137,7 +1177,7 @@ class TransactionController extends Controller
             $master = $masterRes['result'][0] ?? null;
             $status = strtolower($master['status'] ?? '');
 
-            if ($status === 'draft') {
+            if (in_array($status, ['draft', 'cancelled']) && $consolType !== 2) {
                 Log::info("divertedConsol: consol master not consolidated, skipping this notebook row", [
                     'consolMasterId' => $consolMasterId,
                     'status' => $status
@@ -1205,7 +1245,8 @@ class TransactionController extends Controller
                                         'actual_datetime' => $actualTime,
                                         'button_readonly' => true,
                                         'button_confirm_semd' => false,
-                                        'clicked_by' => (int)$uid
+                                        'clicked_by' => (int)$uid,
+                                        'milestone_status' => 'Diverted'
                                     ]]
                                 ]
                             ],
@@ -1334,7 +1375,8 @@ class TransactionController extends Controller
                                         'actual_datetime' => $actualTime,
                                         'button_readonly' => true,
                                         'button_confirm_semd' => false,
-                                        'clicked_by' => (int)$uid
+                                        'clicked_by' => (int)$uid,
+                                        'milestone_status' => 'Diverted'
                                     ]]
                                 ]
                             ],
@@ -1380,7 +1422,6 @@ class TransactionController extends Controller
                         "id" => rand(1000, 9999)
                     ]);
                     $originBookingRef = $originDispatch['result'][0]['booking_reference_no'] ?? null;
-
                     if ($originBookingRef) {
                         $searchBooking = jsonRpcRequest($odooUrl, [
                             "jsonrpc" => "2.0",
@@ -1392,32 +1433,37 @@ class TransactionController extends Controller
                                     $db, $uid, $odooPassword,
                                     "freight.management", "search_read",
                                     [[["booking_reference_no", "=", $originBookingRef]]],
-                                    ["fields" => ["id", "stage_id"]]
+                                    ["fields" => ["id", "stage_id","container_number"]]
                                 ],
                             ],
                             "id" => rand(1000, 9999)
                         ]);
 
                         $bookingIds = $searchBooking['result'][0]['id'] ?? null;
-                        if ($bookingIds) {
-                            $updateBookingStage = jsonRpcRequest($odooUrl, [
-                                "jsonrpc" => "2.0",
-                                "method"  => "call",
-                                "params"  => [
-                                    "service" => "object",
-                                    "method"  => "execute_kw",
-                                    "args"    => [
-                                        $db, $uid, $odooPassword,
-                                        "freight.management", "write",
-                                        [[$bookingIds], ["stage_id" => 5]]
-                                    ]
-                                ],
-                                "id" => rand(1000, 9999)
-                            ]);
-                            $resultSummary['origin_booking_update'] = $updateBookingStage;
-                            Log::info("Origin freight.management updated to stage 5", ['originBookingRef' => $originBookingRef, 'bookingId' => $bookingIds, 'response' => $updateBookingStage]);
+                        $containerNo =  trim($searchBooking['result'][0]['container_number'] ?? '');
+                        if (!empty($containerNo)) {
+                            if ($bookingIds) {
+                                $updateBookingStage = jsonRpcRequest($odooUrl, [
+                                    "jsonrpc" => "2.0",
+                                    "method"  => "call",
+                                    "params"  => [
+                                        "service" => "object",
+                                        "method"  => "execute_kw",
+                                        "args"    => [
+                                            $db, $uid, $odooPassword,
+                                            "freight.management", "write",
+                                            [[$bookingIds], ["stage_id" => 5]]
+                                        ]
+                                    ],
+                                    "id" => rand(1000, 9999)
+                                ]);
+                                $resultSummary['origin_booking_update'] = $updateBookingStage;
+                                Log::info("Origin freight.management updated to stage 5", ['originBookingRef' => $originBookingRef, 'bookingId' => $bookingIds, 'response' => $updateBookingStage]);
+                            } else {
+                                Log::warning("divertedConsol: no freight.management booking found for origin bookingRef", ['originBookingRef' => $originBookingRef]);
+                            }
                         } else {
-                            Log::warning("divertedConsol: no freight.management booking found for origin bookingRef", ['originBookingRef' => $originBookingRef]);
+                            Log::warning("divertedConsol: origin dispatch has no container number", ['consolOriginId' => $consolOriginId]);
                         }
                     } else {
                         Log::warning("divertedConsol: origin dispatch has no booking_reference_no", ['consolOriginId' => $consolOriginId]);
@@ -1581,9 +1627,92 @@ class TransactionController extends Controller
         }
     }
 
+    private function updateBookingStatus($bookingRef, $db, $uid, $odooPassword, $odooUrl, $updateBookingStatus, $transactionId = null)
+    {
+        if (!$bookingRef) return;
+
+        // 1️⃣ First, normal booking lookup
+        $searchResponse = jsonRpcRequest($odooUrl, [
+            'jsonrpc' => '2.0',
+            'method' => 'call',
+            'params' => [
+                'service' => 'object',
+                'method' => 'execute_kw',
+                'args' => [
+                    $db,
+                    $uid,
+                    $odooPassword,
+                    'freight.management',
+                    'search_read',
+                    [[['booking_reference_no', '=', $bookingRef]]],
+                    ['fields' => ['id', 'stage_id']]
+                ]
+            ],
+            'id' => rand(1000, 9999)
+        ]);
+
+        $bookingId = $searchResponse['result'][0]['id'] ?? null;
+
+        if (!$bookingId) {
+            Log::warning("No booking found for bookingRef {$bookingRef}");
+            return;
+        }
+
+        // 2️⃣ Check if this booking is part of a consolidated destination
+        $notebookRes = jsonRpcRequest($odooUrl, [
+            'jsonrpc' => '2.0',
+            'method' => 'call',
+            'params' => [
+                'service' => 'object',
+                'method' => 'execute_kw',
+                'args' => [
+                    $db, $uid, $odooPassword,
+                    'consol.type.notebook', 'search_read',
+                    [[['consol_destination', '=', $transactionId]]],
+                    ['fields' => ['id', 'type_consol', 'consol_destination']]
+                ]
+            ],
+            'id' => rand(1000, 9999)
+        ]);
+
+        $consolNotebook = $notebookRes['result'][0] ?? null;
+        $consolType = $consolNotebook['type_consol'][0] ?? null;
+
+        // 3️⃣ Decide if we should force stage 6
+        if ($consolNotebook && $consolType == 1) {
+            Log::info("BookingRef {$bookingRef} is part of consolidated destination → forcing stage 6");
+            $updateBookingStatus['stage_id'] = 6;
+        }
+
+        // 4️⃣ Update booking stage/status
+        $updateResponse = jsonRpcRequest($odooUrl, [
+            'jsonrpc' => '2.0',
+            'method' => 'call',
+            'params' => [
+                'service' => 'object',
+                'method' => 'execute_kw',
+                'args' => [
+                    $db, $uid, $odooPassword,
+                    'freight.management', 'write',
+                    [[$bookingId], $updateBookingStatus]
+                ]
+            ],
+            'id' => rand(1000, 9999)
+        ]);
+
+        Log::info("Updated booking status for bookingRef {$bookingRef}, bookingId: {$bookingId}", [
+            'update' => $updateBookingStatus,
+            'response' => $updateResponse
+        ]);
+
+        return $updateResponse;
+    }
+
+
 
     public function uploadPOD(Request $request)
     {
+        
         $url = $this->url;
         $db = $this->db;
         $uid = $request->query('uid') ;
@@ -1748,11 +1877,17 @@ class TransactionController extends Controller
         $containerNumber = $request->input('enteredContainerNumber');
         $odooUrl = $this->odoo_url;
 
+
+       
+       
+
         $type = $this->handleDispatchRequest($request);
         if ($type instanceof \Illuminate\Http\JsonResponse) return $type;
 
         $serviceType = is_array($type['service_type']) ? $type['service_type'][0] : $type['service_type'];
-        $updateField = $this->buildUpdateField2($type, $requestNumber, $images, $signature, $enteredName, $actualTime, $containerNumber, $newStatus, $serviceType);
+        $result = $this->buildUpdateField2($type, $requestNumber, $images, $signature, $enteredName, $actualTime, $containerNumber, $newStatus, $serviceType);
+        $updateField = $result['updateField'];
+        $updateBookingStatus = $result['updateBookingStatus'];
 
         if (empty($updateField)) {
             return response()->json(['success' => false, 'message' => 'No matching update rules found'], 400);
@@ -1775,12 +1910,22 @@ class TransactionController extends Controller
         if ($milestoneResult instanceof \Illuminate\Http\JsonResponse) return $milestoneResult;
 
         $milestoneCodeToUpdate = $this->resolveMilestoneCode2($type, $requestNumber, $serviceType);  
-        if(in_array($milestoneCodeToUpdate, ['CYDT', 'LCLDT'])) {
+        if (in_array($milestoneCodeToUpdate, ['CLOT', 'CLDT', 'TCLOT'])) {
+            if ($bookingRef && !empty($updateBookingStatus)) {
+                Log::info("Triggering updateBookingStatus for bookingRef {$bookingRef}", ["status" => $updateBookingStatus]);
+                $this->updateBookingStatus($bookingRef, $db, $uid, $odooPassword, $odooUrl, $updateBookingStatus);
+            } else {
+                Log::warning("Skipped updateBookingStatus — missing bookingRef or empty updateBookingStatus");
+            }
+        }
+
+        if($milestoneCodeToUpdate === 'CYDT') {
             $bookingRef = $type['booking_reference_no'] ?? null;
             if($bookingRef) {
                 $this->updateBookingStage2($bookingRef, $db, $uid, $odooPassword, $odooUrl);
             }
         }
+
 
         if($milestoneCodeToUpdate === 'TEOT'){
             $notebookRes = jsonRpcRequest($odooUrl, [

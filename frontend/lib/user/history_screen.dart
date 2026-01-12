@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:frontend/models/consolidation_model.dart';
 import 'package:frontend/models/consolidation_extension.dart';
 import 'package:frontend/models/driver_reassignment_model.dart';
+import 'package:frontend/models/milestone_history_model.dart';
 import 'package:frontend/models/transaction_model.dart';
 import 'package:frontend/notifiers/auth_notifier.dart';
 import 'package:frontend/provider/accepted_transaction.dart' as accepted_transaction;
@@ -24,7 +25,8 @@ import 'package:intl/intl.dart';
 
 class HistoryScreen extends ConsumerStatefulWidget{
   final Map<String, dynamic> user;
-  const HistoryScreen({super.key, required this.user});
+   final Transaction? transaction;
+  const HistoryScreen({super.key, required this.user,  this.transaction});
 
   @override
   // ignore: library_private_types_in_public_api
@@ -34,6 +36,94 @@ class HistoryScreen extends ConsumerStatefulWidget{
 class _HistoryPageState extends ConsumerState<HistoryScreen> {
   String? uid;
  Future<List<Transaction>>? _futureTransactions;
+// ------------------- LEG HELPERS -------------------
+  String? _getLegForTransaction(Transaction tx) {
+    final legRequestMap = {
+      'de': tx.deRequestNumber,
+      'pl': tx.plRequestNumber,
+      'dl': tx.dlRequestNumber,
+      'pe': tx.peRequestNumber,
+    };
+    final entry = legRequestMap.entries.firstWhere(
+      (e) => e.value == tx.requestNumber,
+      orElse: () => const MapEntry('', null),
+    );
+    return entry.key.isEmpty ? null : entry.key;
+  }
+
+MilestoneHistoryModel? _getLatestMilestoneForLeg(Transaction tx, String leg) {
+  if (tx.history == null || tx.history!.isEmpty) return null;
+
+  // Filter history by dispatchId and leg
+  final matchingHistory = tx.history!
+      .where((h) =>
+          h.dispatchId.toString() == tx.id.toString() &&
+          h.fclCode.toUpperCase().startsWith(leg.toUpperCase()) && // optional if your FCL codes use leg prefixes
+          h.actualDatetime.isNotEmpty == true)
+      .toList();
+
+  if (matchingHistory.isEmpty) {
+    // If none match by FCL prefix, fallback to any milestone for this dispatchId
+    final fallbackHistory = tx.history!
+        .where((h) =>
+            h.dispatchId.toString() == tx.id.toString() &&
+            h.actualDatetime.isNotEmpty == true)
+        .toList();
+
+    if (fallbackHistory.isEmpty) return null;
+
+    fallbackHistory.sort((a, b) {
+      final aTime = DateTime.tryParse(a.actualDatetime) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bTime = DateTime.tryParse(b.actualDatetime) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bTime.compareTo(aTime);
+    });
+
+    return fallbackHistory.first;
+  }
+
+  // Sort by latest datetime
+  matchingHistory.sort((a, b) {
+    final aTime = DateTime.tryParse(a.actualDatetime) ?? DateTime.fromMillisecondsSinceEpoch(0);
+    final bTime = DateTime.tryParse(b.actualDatetime) ?? DateTime.fromMillisecondsSinceEpoch(0);
+    return bTime.compareTo(aTime);
+  });
+
+  return matchingHistory.first;
+}
+
+
+Map<String, String> getCompletedTransactionDatetime(Transaction tx) {
+  final leg = _getLegForTransaction(tx);
+  MilestoneHistoryModel? milestone;
+
+  if (leg != null) {
+    milestone = _getLatestMilestoneForLeg(tx, leg);
+  }
+
+  String? rawDateTime;
+
+if (tx.requestStatus == 'Completed') {
+  rawDateTime = tx.completedTime?.isNotEmpty == true
+      ? tx.completedTime
+      : milestone?.actualDatetime ?? tx.backloadConsolidation?.consolidatedDatetime ?? tx.writeDate;
+} else if (tx.requestStatus == 'Backload') {
+  rawDateTime = tx.backloadConsolidation?.consolidatedDatetime.isNotEmpty == true
+      ? tx.backloadConsolidation?.consolidatedDatetime
+      : milestone?.actualDatetime ?? tx.completedTime ?? tx.writeDate;
+} else if (tx.stageId == 'Cancelled') {
+  rawDateTime = tx.writeDate?.isNotEmpty == true
+      ? tx.writeDate
+      : milestone?.actualDatetime ?? tx.completedTime ?? tx.backloadConsolidation?.consolidatedDatetime;
+} else {
+  rawDateTime = milestone?.actualDatetime ?? tx.completedTime ?? tx.backloadConsolidation?.consolidatedDatetime ?? tx.writeDate;
+}
+
+
+  return separateDateTime(rawDateTime);
+}
+
+  
+
 
  @override
 void initState() {
@@ -98,6 +188,8 @@ void initState() {
   
     
     final acceptedTransaction = ref.watch(accepted_transaction.acceptedTransactionProvider);
+
+    
 
     return Scaffold(
       body: SafeArea(
@@ -192,39 +284,91 @@ void initState() {
                    
                     final authPartnerId = ref.watch(authNotifierProvider).partnerId;
                     final driverId = authPartnerId?.toString();
+                    final currentDriverName = ref.watch(authNotifierProvider).driverName?.toString() ?? '';
                  
                    
-                    final expandedTransactions = TransactionUtils.expandTransactions(
-                      transaction,
-                      driverId ?? '',
-                    );
+                     //  / Step 1: Expand all normal transactions for this driver
+                  final expandedTransactions = TransactionUtils.expandTransactions(
+                    transactionList, // your normal transactions list
+                    driverId ?? '',
+                  );
 
-                 
-                    final ongoingTransactions = expandedTransactions
-                      .where((tx) =>  ['Cancelled', 'Completed'].contains(tx.stageId) || ['Backload', 'Completed'].contains(tx.requestStatus) || tx.reassignment.any((e) => e.driverId.toString() == driverId)) // include removed
-                      .take(5)
-                      .toList()
-                      ..sort((a,b){
-                      DateTime getRecentDate(Transaction t) {
-                        final completed = DateTime.tryParse(t.completedTime ?? '');
-                        final cancelled = DateTime.tryParse(t.writeDate ?? '');
-                        final backload = DateTime.tryParse(t.backloadConsolidation?.consolidatedDatetime ?? '');
-                        
-                        return completed ?? backload ??cancelled ?? DateTime.fromMillisecondsSinceEpoch(0);
+                  // ✅ STEP 2: Collect ALL reassigned items from every transaction
+                  final allReassignments = transactionList
+                      .where((t) => t.reassigned != null && t.reassigned!.isNotEmpty)
+                      .expand((t) => t.reassigned!)
+                      .toList();
 
-                      }
-                      return getRecentDate(b).compareTo(getRecentDate(a));
-                    });
+                  // ✅ STEP 3: Expand them for the current driver
+                  final reassignedTransactions = TransactionUtils.expandReassignments(
+                    allReassignments,
+                    driverId ?? '',
+                    currentDriverName,
+                    transactionList, // pass all transactions for parent lookup
+                  );
 
-                    String getStatusLabel(Transaction item) {
+
+                  // Step 3: Merge normal + reassigned
+                  final allTransactions = [
+                    ...expandedTransactions,
+                    ...reassignedTransactions
+                  ];
+
+                  // Deduplicate by ID + request number
+                  final dedupedTransactions = <Transaction>[];
+                  for (final tx in allTransactions) {
+                    if (!dedupedTransactions.any((t) =>
+                        t.id == tx.id && t.requestNumber == tx.requestNumber)) {
+                      dedupedTransactions.add(tx);
+                    }
+                  }
+
+                  final recent5Transactions = dedupedTransactions
+                    .where((tx) {
+                      if (tx.isReassigned == true) return true; // always include reassigned
+                      return ['Cancelled', 'Completed'].contains(tx.stageId) ||
+                          ['Backload', 'Completed'].contains(tx.requestStatus);
+                    })
+                    .toList()
+                  ..sort((a, b) {
+                    DateTime getRecentDate(Transaction t) {
+                      final completed = DateTime.tryParse(t.completedTime ?? '');
+                      final cancelled = DateTime.tryParse(t.writeDate ?? '');
+                      final backload = DateTime.tryParse(t.backloadConsolidation?.consolidatedDatetime ?? '');
+                      final reassigned = (t.isReassigned == true && (t.reassigned?.isNotEmpty ?? false))
+                          ? DateTime.tryParse(t.reassigned!.first.createDate)
+                          : null;
+
+                      // prioritize reassignment first, then completed/backload/cancelled
+                      return reassigned ?? completed ?? backload ?? cancelled ?? DateTime.fromMillisecondsSinceEpoch(0);
+                    }
+
+                    return getRecentDate(b).compareTo(getRecentDate(a)); // descending (most recent first)
+                  });
+
+                final ongoingTransactions = recent5Transactions.take(5).toList();
+
+
+                   
+                   
+                   String getStatusLabel(Transaction item, String currentDriverId, String currentDriverName) {
                       final status = item.requestStatus?.trim();
                       final stage = item.stageId?.trim();
-                    
+                     final isReassigned = item.reassigned?.any(
+                        (r) => r.driverId.toString() == currentDriverId ||
+                              r.driverName.toLowerCase().contains(currentDriverName.toLowerCase()) &&
+                              r.requestNumber == item.requestNumber,
+                      ) ?? false;
+
+
+
+                      if (item.isReassigned == true || isReassigned) return 'Reassigned';
 
                       if (status == 'Completed' || status == 'Backload') return status!;
                       if (stage == 'Completed' || stage == 'Cancelled') return stage!;
                       return '—';
                     }
+                           
 
              
                     if (ongoingTransactions.isEmpty) {
@@ -255,7 +399,11 @@ void initState() {
                       itemCount: ongoingTransactions.length,
                       itemBuilder: (context, index) {
                         final item = ongoingTransactions[index];
-                        final statusLabel = getStatusLabel(item);
+                        final statusLabel = getStatusLabel(item, driverId ?? '', currentDriverName);
+
+                          final dateTimeMap = getCompletedTransactionDatetime(item);
+                        final displayDate = dateTimeMap['date']!;
+                        final displayTime = dateTimeMap['time']!;
 
                         return Container(
                           margin: const EdgeInsets.only(bottom: 20),
@@ -318,11 +466,7 @@ void initState() {
                                           crossAxisAlignment: CrossAxisAlignment.end,
                                           children: [
                                             Text(
-                                             (item.requestStatus == 'Completed' || item.requestStatus == 'Backload' || item.stageId == 'Completed')
-                                              ? item.requestStatus == 'Backload' ? 'Backloading' : 'Completed'
-                                              : item.stageId == 'Cancelled'
-                                                ? 'Cancelled'
-                                                : '—',
+                                             statusLabel,
                                               style: AppTextStyles.caption.copyWith(
                                                 color: Colors.white,
                                                 fontWeight: FontWeight.bold
@@ -360,14 +504,7 @@ void initState() {
                                           crossAxisAlignment: CrossAxisAlignment.end,
                                           children: [
                                             Text(
-                                              item.stageId == 'Cancelled'
-                                                ? separateDateTime(item.writeDate)['date'] ?? '—'
-                                                : item.requestStatus == 'Completed'
-                                                  ? separateDateTime(item.completedTime)['date'] ?? '—'
-                                                  : item.requestStatus == 'Backload'
-                                                    ? item.backloadConsolidation?.formattedConsolidatedDate ?? '—'
-                                                    : '—',
-
+                                             displayDate,
                                               style: AppTextStyles.caption.copyWith(
                                                 color: mainColor,
                                                 fontWeight: FontWeight.bold,
@@ -401,14 +538,7 @@ void initState() {
                                           crossAxisAlignment: CrossAxisAlignment.end,
                                           children: [
                                             Text(
-                                              item.stageId == 'Cancelled'
-                                                ? separateDateTime(item.writeDate)['time'] ?? '—'
-                                                : item.requestStatus == 'Completed'
-                                                  ? separateDateTime(item.completedTime)['time'] ?? '—'
-                                                 : item.requestStatus == 'Backload'
-                                                    ? separateDateTime(item.backloadConsolidation?.consolidatedDatetime)['time'] ?? '—'
-
-                                                    : '—',
+                                              displayTime,
                                               style: AppTextStyles.caption.copyWith(
                                                 color: mainColor,
                                                 fontWeight: FontWeight.bold,
